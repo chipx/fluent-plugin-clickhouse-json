@@ -15,10 +15,8 @@ module Fluent
 
         DEFAULT_TIMEKEY = 60 * 60 * 24
 
-        desc "IP or fqdn of ClickHouse node"
-        config_param :host, :string
-        desc "Port of ClickHouse HTTP interface"
-        config_param :port, :integer, default: 8123
+        desc "URI to ClickHouse node"
+        config_param :http_uri, :string
         desc "Database to use"
         config_param :database, :string, default: "default"
         desc "Table to use"
@@ -31,6 +29,12 @@ module Fluent
         config_param :tz_offset, :integer, default: 0
         desc "Name of internal fluentd time field (if need to use)"
         config_param :datetime_name, :string, default: nil
+        desc "Name of internal fluentd tag field (if need to use)"
+        config_param :tag_name, :string, default: nil
+        desc "Date time precission for convert to DateTime64(*)"
+        config_param :datetime_precision, :integer, default: 0
+        desc "Drop fields with null value"
+        config_param :drop_null_fields, :bool, default: true
         desc "Raise UnrecoverableError when the response is non success, 4xx/5xx"
         config_param :error_response_as_unrecoverable, :bool, default: false
         desc "The list of retryable response code"
@@ -70,7 +74,7 @@ module Fluent
         end
 
         def make_uri(conf)
-            uri = URI("http://#{ conf["host"] }:#{ conf["port"] || 8123 }/")
+            uri = URI("#{ conf["http_uri"] }/")
             params = {
                 "database" => conf["database"] || "default",
                 "user"     => conf["user"] || "default",
@@ -82,7 +86,25 @@ module Fluent
 
         def format(tag, timestamp, record)
             if @datetime_name
-                record[@datetime_name] = timestamp + @tz_offset * 60
+                if @datetime_precision > 0
+                   record[@datetime_name] = (timestamp.to_f * (10**@datetime_precision)).to_i + @tz_offset * 60 
+                else
+                   record[@datetime_name] = timestamp + @tz_offset * 60
+                end
+            end
+
+            if @tag_name
+                record[@tag_name] = tag
+            end
+
+            if @drop_null_fields
+                new_record = record.dup
+                new_record.each_key do |k|
+                    if new_record[k] == nil
+                        new_record.delete(k)
+                    end
+                end
+                return Yajl.dump(new_record) + "\n"
             end
 
             return Yajl.dump(record) + "\n"
@@ -90,21 +112,27 @@ module Fluent
 
         def write(chunk)
           uri = @uri.clone
-          query = {"query" => "INSERT INTO #{@table} FORMAT JSONEachRow"}
+          query_table = extract_placeholders(@table, chunk)
+          query = {"query" => "INSERT INTO #{query_table} FORMAT JSONEachRow"}
           uri.query = URI.encode_www_form(@uri_params.merge(query))
 
           req = Net::HTTP::Post.new(uri)
           req.body = chunk.read
 
-          res = Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }
+          http = Net::HTTP.new(uri.hostname, uri.port)
+          if uri.instance_of?  URI::HTTPS
+              http.use_ssl = true
+              http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+          end
+          resp = http.request(req)
 
-          if res.is_a?(Net::HTTPSuccess)
+          if resp.is_a?(Net::HTTPSuccess)
             return
           end
           
-          msg = "Clickhouse responded: #{res.body}"
+          msg = "Clickhouse responded: #{resp.body}"
 
-          if @retryable_response_codes.include?(res.code.to_i)
+          if @retryable_response_codes.include?(resp.code.to_i)
             raise RetryableResponse, msg
           end
 

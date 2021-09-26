@@ -15,8 +15,7 @@ There is mimimum fields in example td-agent.conf:
 </source>
 <match inp>
     @type clickhousejson
-    host 127.0.0.1
-    port 8123
+    http_uri http://clickhouse
     table FLUENT
 </match>
 ```
@@ -29,6 +28,9 @@ Additional fields:
     password <password>, default password is ""
     datetime_name <field name>, field with DateTime value
     tz_offset <minutes>, timezone offset in minutes
+    tag_name <field name>, field with tage value
+    datetime_precision <integer>, date time precission for convert to DateTime64
+    drop_null_fields <bool>, drop all fields with null value
     error_response_as_unrecoverable <true>, whatever to raise unrecoverable error when the response is non success. Default is "false"
     retryable_response_codes <array>, the list of retryable response code. Default is [503]
 <match inp>
